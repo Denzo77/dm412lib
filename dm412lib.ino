@@ -9,6 +9,7 @@
  *   (20us pulses on driver)
  * 
  */
+#define MAX_N_LIGHTS 10
 
 #include "fastDigitalIO.h"
 
@@ -16,7 +17,6 @@ struct DM412DriverConfig
 {
     uint8_t clock_pin;
     uint8_t data_pin;
-
     uint8_t clock_rate;
 };
 
@@ -27,11 +27,12 @@ struct LightLevels
     uint16_t b;
 };
 
-
 class DM412Driver
 {
     const DM412DriverConfig config;
-    
+    const int n_lights;
+    LightLevels lightArray[MAX_N_LIGHTS];
+
     inline void clock_delay() {
         delayMicroseconds(config.clock_rate);
     }
@@ -43,41 +44,37 @@ class DM412Driver
     void set_data_pin(bool is_high) {
         fastDigitalWrite(config.data_pin, is_high);
     }
-
-
+    
     // FIXME: Switch to using set pin fns instead of registers.
     // + actually use val.
     void write_channel(const uint16_t val) {
+        // no interupts
         cli();
         
-        // set_clock_pin(LOW);
-        PORTB &= ~(1 << PB0);
-
+        set_clock_pin(LOW);
+        // PORTB &= ~(1 << PB0);
+        
+        // i starts as 2^15 then is shifted one to the right each time
+        // 
         for (auto i = (0x8000); i != 0; i >>= 1) {
-            // set_clock_pin(LOW);
-            // fastDigitalWrite(config.clock_pin, LOW);
-            // set_data_pin((i & val));
-            // fastDigitalWrite(config.data_pin, (i & val));
-            // fastDigitalWrite(config.clock_pin, HIGH);
-
-            // set data_pin
-            const auto set_bit = (i & val) ? true : false;
-            PORTB &= ~(1 << PB0);
-            if (set_bit) {
-                PORTB |= (1 << PB1);
-            } else {
-                PORTB &= ~(1 << PB1);
-            }
+            set_clock_pin(LOW);
+            // set bit at position i
+            set_data_pin((i & val));
             clock_delay();
-            // clock signal
-            PORTB |= (1 << PB0);
+            set_clock_pin(HIGH);
             clock_delay();
         }
+        // add interupts
         sei();
     }
 
 public:
-    DM412Driver(DM412DriverConfig config) : config(config) {}
+    DM412Driver(DM412DriverConfig config, int n_lights) : config(config), n_lights(n_lights) {
+        // initialise all lights to zero to start
+        for (int i = 0; i < n_lights; i++) {
+            lightArray[i] = {0, 0, 0};
+        }
+    } 
 
     void begin() {
         // TODO: Swap for faster functions
@@ -99,57 +96,56 @@ public:
         write_channel(level.b);
     }
 
+    void set_light(int light, LightLevels level){
+        lightArray[light] = level;
+    }
+    void write_lights(){
+        for (int i = 0; i < n_lights; i++) {
+            write(lightArray[i]);
+        }
+        latch();
+    }
+
+    int get_n_lights(){
+        return n_lights;
+    }
+
     void latch() {
         set_clock_pin(HIGH);
-        PORTB |= (1 << PB0);
-
         set_data_pin(LOW);
-
         clock_delay();
         cli();
 
         for (auto i=0; i != 8; ++i) {
-            // set_data_pin(LOW);
-            PORTB &= ~(1 << PB1);
+            set_data_pin(LOW);
             clock_delay();
-            // set_data_pin(HIGH);
-            PORTB |= (1 << PB1);
-
+            set_data_pin(HIGH);
             clock_delay();
         }
-        // set_data_pin(LOW);
-        PORTB &= ~(1 << PB1);
+        set_data_pin(LOW);
         sei();
 
     }
 };
 
 
-DM412Driver leds {{
+DM412Driver leds {
+    {
         8, // clock_pin
         9, // data_pin
         1, // Clock speed in us per pulse
-}};
-
+    },
+    4 // n_lights
+};
+int i = 0;
 void setup() {
-    Serial.begin(115200);
-    Serial.println("hello");
-
     leds.begin();
 }
 
 void loop() {
-    Serial.println("Go!");
-
-    // leds.write({'a', 'b', 0x4325});
-    // for (auto i = 0; i != 4; ++i) {
-    //     // leds.write({(i+1) * 1000, 0, 0});
-    //     // leds.latch();
-    // }
-    leds.write({0xffff, 0xffff, 0xffff});
-    leds.write({0xffff, 0, 0});
-    leds.write({0x0, 0xffff, 0});
-    leds.write({0x0, 0, 0xffff});
-    leds.latch();
-    delay(1000);
+    leds.set_light(i, {0x0, 0x0, 0xffff});
+    leds.write_lights();
+    leds.set_light(i, {0x0, 0x0, 0x0});
+    i = (i + 1) % leds.get_n_lights();
+    delay(200);
 }
